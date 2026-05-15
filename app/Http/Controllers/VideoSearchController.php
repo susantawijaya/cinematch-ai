@@ -14,7 +14,7 @@ class VideoSearchController extends Controller
 
         if ($query) {
             // Membaca database JSON yang dibuat oleh Python
-            $jsonPath = base_path('scripts/video_metadata_index.json');
+            $jsonPath = base_path('video_metadata_index.json');
             
             if (File::exists($jsonPath)) {
                 $database = json_decode(File::get($jsonPath), true);
