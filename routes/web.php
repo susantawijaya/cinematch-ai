@@ -23,10 +23,10 @@ Route::post('/google-drive/index', function (Request $request) {
 
     $folderId = $request->input('folder_id');
     $userPrompt = $request->input('prompt');
-    $accessToken = session('google_token'); // Ini string token
+    $accessToken = session('google_token'); 
 
     if (!$accessToken) {
-        return redirect('/search')->with('error', 'Token tidak ditemukan. Re-connect Google Drive.');
+        return redirect('/')->with('error', 'Token Google tidak ditemukan. Silakan hubungkan ulang.');
     }
 
     $scriptPath = base_path('scripts/cloud_indexer.py');
@@ -39,16 +39,21 @@ Route::post('/google-drive/index', function (Request $request) {
     try {
         $process->mustRun();
         $output = $process->getOutput();
-        dd($output);
+        
         $resultData = json_decode($output, true);
 
         if (is_null($resultData)) {
-            return redirect('/search')->with('error', 'Format JSON dari Python rusak.');
+            // Jika Python crash tapi tidak mengirim JSON, kita tangkap output mentahnya
+            return redirect('/search')->with('error', 'Gagal memproses video. Detail: ' . substr($output, 0, 200));
+        }
+
+        if (isset($resultData['error'])) {
+            return redirect('/search')->with('error', $resultData['error']);
         }
 
         $newResults = $resultData['results'] ?? [];
         if (empty($newResults)) {
-            return redirect('/search')->with('error', 'AI tidak menemukan momen apapun.');
+            return redirect('/search')->with('error', 'AI tidak menemukan momen yang sesuai di folder tersebut.');
         }
 
         $indexPath = base_path('video_metadata_index.json');
@@ -57,9 +62,11 @@ Route::post('/google-drive/index', function (Request $request) {
         $mergedData = array_merge($existingData, $newResults);
         File::put($indexPath, json_encode($mergedData, JSON_PRETTY_PRINT));
 
-        return redirect('/search')->with('success', '⚡ Berhasil menganalisis ' . count($newResults) . ' video.');
+        return redirect('/search')->with('success', '⚡ Analisis selesai! ' . count($newResults) . ' momen baru ditambahkan.');
 
     } catch (ProcessFailedException $e) {
-        return redirect('/search')->with('error', 'Python Error: ' . $e->getMessage());
+        // Menangkap error 429 atau error library Python langsung dari terminal
+        $errorMsg = $e->getProcess()->getErrorOutput() ?: $e->getMessage();
+        return redirect('/search')->with('error', 'System Error: ' . $errorMsg);
     }
 });
