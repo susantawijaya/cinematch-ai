@@ -79,6 +79,7 @@ try:
         if "data" in hasil:
             for match in hasil["data"]:
                 semua_hasil.append({
+                    "folder_id": folder_id,               # KTP FOLDER (Isolasi Workspace)
                     "file_id": item['id'],                # Kunci Google Drive agar preview muncul
                     "video": item['name'],                # UI menggunakan key 'video' bukan 'filename'
                     "timestamp": match.get("timestamp", "0:00"),
