@@ -40,6 +40,14 @@ def download_temp(file_id, file_name):
         while not done: _, done = downloader.next_chunk()
     return file_path
 
+# FUNGSI BARU: Mengubah format 01:20 menjadi detik (80) agar video player bisa melompat otomatis
+def parse_time_to_seconds(timestamp_str):
+    try:
+        m, s = timestamp_str.split(':')
+        return int(m) * 60 + int(s)
+    except:
+        return 0
+
 def analisa_video(file_path, prompt):
     video_file = genai.upload_file(path=file_path)
     while video_file.state.name == "PROCESSING":
@@ -67,13 +75,21 @@ try:
         path = download_temp(item['id'], item['name'])
         hasil = analisa_video(path, user_prompt)
         
+        # PERUBAHAN UTAMA: Meratakan (Flatten) data agar dikenali Laravel
         if "data" in hasil:
-            semua_hasil.append({
-                "filename": item['name'],
-                "file_id": item['id'], # PENTING: Untuk streaming cloud
-                "matches": hasil["data"]
-            })
+            for match in hasil["data"]:
+                semua_hasil.append({
+                    "file_id": item['id'],                # Kunci Google Drive agar preview muncul
+                    "video": item['name'],                # UI menggunakan key 'video' bukan 'filename'
+                    "timestamp": match.get("timestamp", "0:00"),
+                    "timestamp_seconds": parse_time_to_seconds(match.get("timestamp", "0:00")),
+                    "description": match.get("description", "")
+                })
+                
         if os.path.exists(path): os.remove(path) # Hapus agar server tidak penuh
+        
+        # Jeda 5 detik sebagai pelindung anti-error Limit/Kuota
+        time.sleep(5)
 
     print(json.dumps({"status": "success", "results": semua_hasil}))
 except Exception as e:
