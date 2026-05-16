@@ -8,7 +8,10 @@ from googleapiclient.http import MediaIoBaseDownload
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# Path library milik LENOVO (Sesuaikan jika sudah di VPS)
+# 🔥 KUNCI ANTI-TERDIAM: Paksa Windows menggunakan UTF-8 dan melepaskan buffer
+sys.stdout.reconfigure(encoding='utf-8')
+
+# Path library milik LENOVO (Sesuaikan jika sudah di-deploy ke server)
 sys.path.append(r"C:\Users\LENOVO\AppData\Roaming\Python\Python314\site-packages")
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../.env'))
@@ -17,7 +20,7 @@ model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 genai.configure(api_key=api_key)
 
 if len(sys.argv) < 4:
-    print(json.dumps({"error": "Argumen tidak lengkap."}))
+    print(json.dumps({"error": "Argumen tidak lengkap."}), flush=True)
     sys.exit(1)
 
 folder_id, user_prompt, access_token = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -26,7 +29,7 @@ try:
     creds = Credentials(token=access_token)
     drive_service = build('drive', 'v3', credentials=creds)
 except Exception as e:
-    print(json.dumps({"error": f"Gagal Drive: {str(e)}"}))
+    print(json.dumps({"error": f"Gagal API Drive: {str(e)}"}), flush=True)
     sys.exit(1)
 
 def download_temp(file_id, file_name):
@@ -40,7 +43,6 @@ def download_temp(file_id, file_name):
         while not done: _, done = downloader.next_chunk()
     return file_path
 
-# Mengubah format 01:20 menjadi detik (80) agar video player bisa melompat otomatis
 def parse_time_to_seconds(timestamp_str):
     try:
         m, s = timestamp_str.split(':')
@@ -54,7 +56,6 @@ def analisa_video(file_path, prompt):
         time.sleep(5)
         video_file = genai.get_file(video_file.name)
     
-    # Menggembok temperature ke 0.0 agar akurasi deteksi konsisten di setiap video
     model = genai.GenerativeModel(
         model_name,
         generation_config={
@@ -62,15 +63,35 @@ def analisa_video(file_path, prompt):
             "response_mime_type": "application/json"
         }
     )
-    # 🔥 SUDAH DI-PERBAIKI: Karakter typo '焦' telah dibuang dari template string JSON
-    instruksi = f"Instruksi: {prompt}. Ekstrak semua momen yang cocok secara mendetail. Jawab WAJIB menggunakan format objek JSON ini: {{\"data\": [{{\"timestamp\": \"menit:detik\", \"description\": \"...\"}}]}}"
-    response = model.generate_content([video_file, instruksi])
-    genai.delete_file(video_file.name)
+    
+    # 🔥 FIX UNIVERSAL: Instruksi digeneralisasikan total untuk semua jenis video tanpa bias olahraga
+    instruksi = f"""
+    Target Analisis: {prompt}
+    
+    ATURAN KETAT AKURASI MUTLAK (UNIVERSAL ANTI-HALLUCINATION):
+    1. Bertindaklah sebagai Video Editor Profesional yang sangat skeptis, objektif, dan jujur. JANGAN PERNAH BERASUMSI ATAU MENEBAK!
+    2. Kamu HANYA boleh mendeteksi dan mengekstrak momen yang BENAR-BENAR terjadi secara visual 100% sesuai dengan Target Analisis: "{prompt}".
+    3. Jika subjek, objek, atau aksi yang diminta di dalam prompt hanya 'hampir terjadi', berupa percobaan gagal, sudut pandang kamera terhalang/blur, atau kondisinya meragukan, CORET dan ABAIKAN! Jangan masukkan ke dalam log data.
+    4. Evaluasi setiap frame secara ketat: Kriteria aksi atau objek yang diminta harus tuntas/terwujud secara penuh dan terbukti secara visual di dalam video agar sah dianggap sebagai momen yang cocok.
+    5. Jawab dengan sangat singkat, padat, dan objektif untuk menghemat kuota token output.
+    
+    Format Output wajib berupa JSON murni tanpa markdown:
+    {{"data": [{{"timestamp": "menit:detik", "description": "deskripsi objektif momen tersebut"}}]}}
+    """
     
     try:
+        response = model.generate_content([video_file, instruksi])
+        genai.delete_file(video_file.name)
+        
         raw_json = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(raw_json)
-    except: return {"data": []}
+    except Exception as e:
+        # Hapus file dari server Google meskipun terjadi error agar memori aman
+        try: genai.delete_file(video_file.name) 
+        except: pass
+        
+        # 🔥 TANGKAP BLOKIR SENSOR GEMINI & KIRIM KE LARAVEL
+        raise Exception(f"Gemini menolak merespon. Kemungkinan diblokir oleh Safety Filter. Detail: {str(e)}")
 
 try:
     query = f"'{folder_id}' in parents and mimeType='video/mp4' and trashed=false"
@@ -79,11 +100,9 @@ try:
 
     semua_hasil = []
     for item in items:
-        # Download hanya untuk analisis, lalu hapus
         path = download_temp(item['id'], item['name'])
         hasil = analisa_video(path, user_prompt)
         
-        # Meratakan (Flatten) data agar dikenali Laravel
         if "data" in hasil:
             for match in hasil["data"]:
                 semua_hasil.append({
@@ -95,11 +114,11 @@ try:
                     "description": match.get("description", "")
                 })
                 
-        if os.path.exists(path): os.remove(path) # Hapus agar server tidak penuh
-        
-        # Jeda 3 detik sebagai pelindung anti-error Limit/Kuota
+        if os.path.exists(path): os.remove(path)
         time.sleep(3)
 
-    print(json.dumps({"status": "success", "results": semua_hasil}))
+    # 🔥 WAJIB flush=True agar output tidak tertahan di buffer Windows
+    print(json.dumps({"status": "success", "results": semua_hasil}), flush=True)
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    # 🔥 WAJIB flush=True untuk Error
+    print(json.dumps({"error": str(e)}), flush=True)
