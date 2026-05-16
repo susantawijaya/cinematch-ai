@@ -40,7 +40,7 @@ def download_temp(file_id, file_name):
         while not done: _, done = downloader.next_chunk()
     return file_path
 
-# FUNGSI BARU: Mengubah format 01:20 menjadi detik (80) agar video player bisa melompat otomatis
+# Mengubah format 01:20 menjadi detik (80) agar video player bisa melompat otomatis
 def parse_time_to_seconds(timestamp_str):
     try:
         m, s = timestamp_str.split(':')
@@ -54,8 +54,16 @@ def analisa_video(file_path, prompt):
         time.sleep(5)
         video_file = genai.get_file(video_file.name)
     
-    model = genai.GenerativeModel(model_name)
-    instruksi = f"Instruksi: {prompt}. Jawab HANYA JSON murni: {{\"data\": [{{\"timestamp\": \"menit:detik\", \"description\": \"...\"}}]}}"
+    # Menggembok temperature ke 0.0 agar akurasi deteksi konsisten di setiap video
+    model = genai.GenerativeModel(
+        model_name,
+        generation_config={
+            "temperature": 0.0,
+            "response_mime_type": "application/json"
+        }
+    )
+    # 🔥 SUDAH DI-PERBAIKI: Karakter typo '焦' telah dibuang dari template string JSON
+    instruksi = f"Instruksi: {prompt}. Ekstrak semua momen yang cocok secara mendetail. Jawab WAJIB menggunakan format objek JSON ini: {{\"data\": [{{\"timestamp\": \"menit:detik\", \"description\": \"...\"}}]}}"
     response = model.generate_content([video_file, instruksi])
     genai.delete_file(video_file.name)
     
@@ -75,13 +83,13 @@ try:
         path = download_temp(item['id'], item['name'])
         hasil = analisa_video(path, user_prompt)
         
-        # PERUBAHAN UTAMA: Meratakan (Flatten) data agar dikenali Laravel
+        # Meratakan (Flatten) data agar dikenali Laravel
         if "data" in hasil:
             for match in hasil["data"]:
                 semua_hasil.append({
-                    "folder_id": folder_id,               # KTP FOLDER (Isolasi Workspace)
-                    "file_id": item['id'],                # Kunci Google Drive agar preview muncul
-                    "video": item['name'],                # UI menggunakan key 'video' bukan 'filename'
+                    "folder_id": folder_id,
+                    "file_id": item['id'],
+                    "video": item['name'],
                     "timestamp": match.get("timestamp", "0:00"),
                     "timestamp_seconds": parse_time_to_seconds(match.get("timestamp", "0:00")),
                     "description": match.get("description", "")
@@ -89,8 +97,8 @@ try:
                 
         if os.path.exists(path): os.remove(path) # Hapus agar server tidak penuh
         
-        # Jeda 5 detik sebagai pelindung anti-error Limit/Kuota
-        time.sleep(5)
+        # Jeda 3 detik sebagai pelindung anti-error Limit/Kuota
+        time.sleep(3)
 
     print(json.dumps({"status": "success", "results": semua_hasil}))
 except Exception as e:
