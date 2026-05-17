@@ -52,7 +52,6 @@ def parse_time_to_seconds(timestamp_str):
     except:
         return 0
 
-# 🔥 FASE 2 - SMART FILTER CORE (OPENCV)
 def smart_filter_pass(file_path):
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
@@ -65,7 +64,6 @@ def smart_filter_pass(file_path):
         cap.release()
         return False, "Metadata video kosong."
 
-    # 1. DURATION GUARD: Cek Durasi (Buang jika < 2 detik)
     duration = frame_count / fps
     if duration < 2.0:
         cap.release()
@@ -75,39 +73,36 @@ def smart_filter_pass(file_path):
     movement_list = []
     prev_frame = None
 
-    # Untuk efisiensi, kita tidak mengecek semua frame, tapi melompat (sampling)
-    # Cukup ambil 10 frame secara merata dari sepanjang video untuk mendeteksi kondisi umum
-    step = max(int(frame_count / 10), 1)
-
-    for i in range(0, int(frame_count), step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+    skip_frames = int(fps) 
+    
+    current_frame = 0
+    while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Ubah frame ke hitam putih untuk analisis piksel
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        brightness_list.append(np.mean(gray))
+        if current_frame % skip_frames == 0:
+            small_frame = cv2.resize(frame, (320, 240))
+            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+            brightness_list.append(np.mean(gray))
 
-        if prev_frame is not None:
-            # Hitung perbedaan piksel dengan frame sebelumnya (Optical Flow sederhana)
-            diff = cv2.absdiff(gray, prev_frame)
-            movement_list.append(np.mean(diff))
+            if prev_frame is not None:
+                diff = cv2.absdiff(gray, prev_frame)
+                movement_list.append(np.mean(diff))
 
-        prev_frame = gray
+            prev_frame = gray
+            
+        current_frame += 1
 
     cap.release()
 
-    # 2. DARKNESS FILTER: Deteksi video saku/gelap gulita
-    # Skala 0 (Hitam pekat) sampai 255 (Putih terang)
     avg_brightness = np.mean(brightness_list) if brightness_list else 0
     if avg_brightness < 15: 
         return False, f"Video terlalu gelap (Skor Brightness: {round(avg_brightness, 1)})."
 
-    # 3. SHAKINESS FILTER: Deteksi getaran ekstrem / lari
     avg_movement = np.mean(movement_list) if movement_list else 0
-    if avg_movement > 90: # Ambang batas pergerakan acak piksel
-        return False, f"Guncangan/blur ekstrem terdeteksi (Skor Movement: {round(avg_movement, 1)})."
+    if avg_movement > 70: 
+        return False, f"Guncangan ekstrem terdeteksi (Skor Movement: {round(avg_movement, 1)})."
 
     return True, "Lolos sensor."
 
@@ -125,18 +120,18 @@ def analisa_video(file_path, prompt):
         }
     )
     
+    # 🔥 INSTRUKSI AI DIPERKETAT AGAR TIDAK MEMECAH KLIP (OVER-REPORTING)
     instruksi = f"""
     Target Analisis: {prompt}
     
-    ATURAN KETAT AKURASI MUTLAK (UNIVERSAL ANTI-HALLUCINATION):
+    ATURAN KETAT AKURASI MUTLAK:
     1. Bertindaklah sebagai Video Editor Profesional yang sangat skeptis, objektif, dan jujur. JANGAN PERNAH BERASUMSI ATAU MENEBAK!
-    2. Kamu HANYA boleh mendeteksi dan mengekstrak momen yang BENAR-BENAR terjadi secara visual 100% sesuai dengan Target Analisis: "{prompt}".
-    3. Jika subjek, objek, atau aksi yang diminta di dalam prompt hanya 'hampir terjadi', berupa percobaan gagal, sudut pandang kamera terhalang/blur, atau kondisinya meragukan, CORET dan ABAIKAN! Jangan masukkan ke dalam log data.
-    4. Evaluasi setiap frame secara ketat: Kriteria aksi atau objek yang diminta harus tuntas/terwujud secara penuh dan terbukti secara visual di dalam video agar sah dianggap sebagai momen yang cocok.
-    5. Jawab dengan sangat singkat, padat, dan objektif untuk menghemat kuota token output.
+    2. Kamu HANYA boleh mendeteksi momen yang BENAR-BENAR terjadi secara visual 100% sesuai dengan Target Analisis.
+    3. JANGAN LAKUKAN OVER-REPORTING! Jika aksi terjadi terus-menerus dalam rentang beberapa detik (misalnya dari 0:05 sampai 0:10), KAMU HANYA BOLEH MENCATAT 1 KALI SAJA yaitu di titik AWAL dimulainya aksi (contoh: 0:05).
+    4. Dilarang keras memecah 1 adegan/momen yang berlanjutan menjadi beberapa timestamp yang berdekatan.
     
     Format Output wajib berupa JSON murni tanpa markdown:
-    {{"data": [{{"timestamp": "menit:detik", "description": "deskripsi objektif momen tersebut"}}]}}
+    {{"data": [{{"timestamp": "menit:detik", "description": "deskripsi singkat objektif dari awal momen ini"}}]}}
     """
     
     try:
@@ -156,39 +151,50 @@ try:
     items = results.get('files', [])
 
     semua_hasil = []
-    # Statistik untuk UI
     stats = {"total": len(items), "filtered": 0, "analyzed": 0}
 
     for item in items:
         path = download_temp(item['id'], item['name'])
         
-        # 🔥 GERBANG TOL SMART FILTER BERAKSI
         is_valid, reason = smart_filter_pass(path)
         
         if not is_valid:
             stats["filtered"] += 1
             if os.path.exists(path): os.remove(path)
-            continue # BUANG VIDEO! Jangan serahkan ke Gemini!
+            continue 
             
-        # Jika lolos sensor, baru berikan ke AI
         stats["analyzed"] += 1
         hasil = analisa_video(path, user_prompt)
         
         if "data" in hasil:
-            for match in hasil["data"]:
+            # Sortir data berdasarkan timestamp dari terkecil ke terbesar
+            sorted_data = sorted(hasil["data"], key=lambda x: parse_time_to_seconds(x.get("timestamp", "0:00")))
+            
+            last_sec = -999 # Variabel memori untuk deduplikasi
+            
+            for match in sorted_data:
+                current_sec = parse_time_to_seconds(match.get("timestamp", "0:00"))
+                
+                # 🔥 FILTER PENGGABUNGAN (DEDUPLIKASI)
+                # Jika momen yang ditemukan jaraknya kurang dari 10 detik dari momen sebelumnya di video yang sama,
+                # anggap itu adalah satu kesatuan adegan yang berlanjut. HIRAUKAN KLIP INI!
+                if abs(current_sec - last_sec) < 10:
+                    continue
+                
+                last_sec = current_sec # Catat memori waktu terbaru
+
                 semua_hasil.append({
                     "folder_id": folder_id,
                     "file_id": item['id'],
                     "video": item['name'],
                     "timestamp": match.get("timestamp", "0:00"),
-                    "timestamp_seconds": parse_time_to_seconds(match.get("timestamp", "0:00")),
+                    "timestamp_seconds": current_sec,
                     "description": match.get("description", "")
                 })
                 
         if os.path.exists(path): os.remove(path)
         time.sleep(3)
 
-    # Kirim juga data statistik filter ke Laravel
     print(json.dumps({"status": "success", "results": semua_hasil, "stats": stats}), flush=True)
 except Exception as e:
     print(json.dumps({"error": str(e)}), flush=True)

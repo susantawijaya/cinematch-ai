@@ -19,9 +19,8 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
   const [collapsedSections, setCollapsedSections] = useState({});
   const chatEndRef = useRef(null);
   
-  // 🔥 REFERENSI BARU: Untuk mengontrol penghentian proses AI di tengah jalan
-  const abortControllerRef = useRef(null);
   const progressIntervalRef = useRef(null);
+  const pollingIntervalRef = useRef(null); // 🔥 Mesin pencari tahu status ke server
 
   const [modal, setModal] = useState({
     isOpen: false, type: 'alert', title: '', message: '', inputValue: '',
@@ -29,6 +28,14 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
   });
 
   const closeModal = () => setModal({ ...modal, isOpen: false });
+
+  // Cleanup saat komponen dibongkar
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     setLocalMessages(chatMessages);
@@ -185,54 +192,49 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
     });
   };
 
-  // 🔥 FITUR BARU: FUNGSI UNTUK MEMBATALKAN PROSES AI
   const handleStopPrompt = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort(); // Putus koneksi HTTP ke server secara paksa
-    }
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-    }
+    if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     setIsAiThinking(false);
     setLocalMessages(prev => [
       ...prev, 
-      { sender: 'ai', message: '⛔ Proses analisis telah dibatalkan secara manual.' }
+      { sender: 'ai', message: '⛔ Pemantauan antrean dibatalkan dari layar. (Pekerjaan mungkin masih berjalan di server belakang).' }
     ]);
   };
 
-  // 🔥 FITUR BARU: FUNGSI UNTUK MENGEDIT PROMPT
   const handleEditPrompt = (text) => {
     setPromptText(text);
-    // Kita biarkan history-nya, tapi textnya kembali ke input, user bisa langsung edit & enter lagi
   };
 
+  // 🔥 FASE 3: FUNGSI PENGIRIMAN DENGAN SISTEM QUEUE POLLING
   const handleChatSubmit = async (e) => {
     e.preventDefault();
     if (!promptText.trim() || isAiThinking) return;
 
     const userMsg = promptText;
     setPromptText('');
-    setLocalMessages(prev => [...prev, { sender: 'user', message: userMsg }]);
+    
+    // Simpan history awal agar bisa membandingkan pesan baru
+    const currentMessages = [...localMessages, { sender: 'user', message: userMsg }];
+    setLocalMessages(currentMessages);
     
     setIsAiThinking(true);
     setProgressStage(1);
-    setProgressStatus('Menghubungkan ke secure Google Drive folder...');
+    setProgressStatus('Mengirim instruksi ke Pekerja Latar Belakang (Queue)...');
 
     const formData = new FormData();
     formData.append('_token', csrfToken);
     formData.append('folder_id', activeFolder);
     formData.append('prompt', userMsg);
 
-    // Inisialisasi AbortController baru untuk request ini
-    abortControllerRef.current = new AbortController();
     progressIntervalRef.current = setInterval(() => {
       setProgressStage(prev => {
         if (prev < 5) {
           const next = prev + 1;
-          if (next === 2) setProgressStatus('Mendownload rekaman video mentah ke area penyimpanan staging...');
-          if (next === 3) setProgressStatus('Mengunggah klip video ke dalam server Gemini AI Core...');
-          if (next === 4) setProgressStatus('AI sedang membaca frame gambar & menganalisis objek visual (PROCESSING)...');
-          if (next === 5) setProgressStatus('Mengekstrak timeline detik, menyusun struktur sub-folder...');
+          if (next === 2) setProgressStatus('Skrip Python sedang menganalisis frame (OpenCV Smart Filter)...');
+          if (next === 3) setProgressStatus('Mengekstrak metadata & mengirim ke server AI Google Cloud...');
+          if (next === 4) setProgressStatus('Gemini AI sedang berpikir & mencari momen yang cocok...');
+          if (next === 5) setProgressStatus('Menyusun klip ke timeline & merapikan database...');
           return next;
         }
         return prev;
@@ -240,34 +242,39 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
     }, 6000);
 
     try {
-      const response = await fetch('/google-drive/index', { 
-        method: 'POST', 
-        body: formData,
-        signal: abortControllerRef.current.signal // 🔥 Hubungkan sinyal Abort
-      });
-      const data = await response.json();
-      
-      clearInterval(progressIntervalRef.current);
-      setIsAiThinking(false);
+      // 1. Tembak ke server (Sekarang hanya butuh 0.1 detik, tanpa timeout!)
+      await fetch('/google-drive/index', { method: 'POST', body: formData });
 
-      if (data.chat_messages) setLocalMessages(data.chat_messages);
-      if (data.all_assets) setLocalAssets(data.all_assets);
+      // 2. Mulai Polling: Cek diam-diam setiap 3 detik ke server
+      pollingIntervalRef.current = setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/workspace/status/${activeFolder}`);
+          const statusData = await statusRes.json();
+
+          const dbMessages = statusData.chat_messages || [];
+          const lastMsg = dbMessages[dbMessages.length - 1];
+
+          // Jika jumlah pesan di database lebih banyak, dan pesan terakhir dari AI, berarti job selesai!
+          if (lastMsg && lastMsg.sender === 'ai' && dbMessages.length > currentMessages.length - 1) {
+            clearInterval(pollingIntervalRef.current);
+            clearInterval(progressIntervalRef.current);
+            setIsAiThinking(false);
+            setLocalMessages(dbMessages);
+            if (statusData.all_assets) setLocalAssets(statusData.all_assets);
+          }
+        } catch (pollErr) {
+          console.error("Gagal mengecek status:", pollErr);
+        }
+      }, 3000);
 
     } catch (err) {
       clearInterval(progressIntervalRef.current);
       setIsAiThinking(false);
-
-      // Cek apakah error karena user menekan tombol Stop (AbortError)
-      if (err.name === 'AbortError') {
-        console.log('Permintaan dibatalkan oleh pengguna.');
-        // Pesan pembatalan sudah di-handle oleh handleStopPrompt()
-      } else {
-        setModal({
-          isOpen: true, type: 'alert', title: 'Koneksi Terputus',
-          message: 'Server mengalami timeout atau koneksi internet terputus saat memproses instruksi. Silakan coba lagi.',
-          confirmText: 'Tutup', isDestructive: false, onConfirm: null
-        });
-      }
+      setModal({
+        isOpen: true, type: 'alert', title: 'Koneksi Terputus',
+        message: 'Gagal mengirim instruksi ke server antrean. Silakan coba lagi.',
+        confirmText: 'Tutup', isDestructive: false, onConfirm: null
+      });
     }
   };
 
@@ -460,7 +467,7 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
                   type="text" 
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="🔍 Cari momen klip, nama folder, atau judul video di sini (contoh: melempar)..." 
+                  placeholder="🔍 Cari momen klip, nama folder, atau judul video di sini..." 
                   className="w-full bg-white/50 backdrop-blur-sm text-zinc-900 px-5 py-3 rounded-2xl text-xs font-bold shadow-sm border border-white/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 transition-all placeholder-zinc-400"
                 />
               </div>
@@ -598,7 +605,7 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
                 <div className="shrink-0 border-b border-zinc-300/40 pb-2 mb-3 flex justify-between items-center">
                   <div>
                     <h3 className="text-xs font-black text-zinc-900 tracking-tight uppercase flex items-center gap-1.5">⚡ Synkora AI Assistant</h3>
-                    <p className="text-[9px] text-zinc-400 font-medium font-mono">Real-time continuous prompt session</p>
+                    <p className="text-[9px] text-zinc-400 font-medium font-mono">Background worker active</p>
                   </div>
                   <button 
                     onClick={handleClearChat} 
@@ -612,7 +619,6 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
                 <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-1">
                   {localMessages.map((msg, i) => (
                     <div key={i} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
-                      {/* 🔥 FITUR BARU: Ikon EDIT di sebelah nama user */}
                       <div className="flex items-center gap-2 mb-0.5">
                         {msg.sender === 'user' && (
                           <button 
@@ -660,7 +666,6 @@ export default function SynkoraDashboard({ csrfToken, initialQuery, allAssets, c
                       className="flex-1 bg-transparent border-none text-xs px-2 py-2 focus:outline-none placeholder-zinc-400 text-zinc-900 font-medium disabled:cursor-not-allowed"
                     />
                     
-                    {/* 🔥 FITUR BARU: Tombol STOP MERAH saat AI sedang jalan */}
                     {isAiThinking ? (
                       <button 
                         type="button" 
