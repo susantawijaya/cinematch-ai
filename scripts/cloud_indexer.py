@@ -2,16 +2,18 @@ import os
 import sys
 import json
 import time
+import cv2
+import numpy as np
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# 🔥 KUNCI ANTI-TERDIAM: Paksa Windows menggunakan UTF-8 dan melepaskan buffer
+# 🔥 KUNCI ANTI-TERDIAM: Paksa Windows menggunakan UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
 
-# Path library milik LENOVO (Sesuaikan jika sudah di-deploy ke server)
+# Path library milik LENOVO (Sesuaikan dengan PC kamu)
 sys.path.append(r"C:\Users\LENOVO\AppData\Roaming\Python\Python314\site-packages")
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../.env'))
@@ -50,6 +52,65 @@ def parse_time_to_seconds(timestamp_str):
     except:
         return 0
 
+# 🔥 FASE 2 - SMART FILTER CORE (OPENCV)
+def smart_filter_pass(file_path):
+    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        return False, "Video rusak/tidak bisa dibaca."
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+    if fps == 0 or frame_count == 0:
+        cap.release()
+        return False, "Metadata video kosong."
+
+    # 1. DURATION GUARD: Cek Durasi (Buang jika < 2 detik)
+    duration = frame_count / fps
+    if duration < 2.0:
+        cap.release()
+        return False, f"Video terlalu pendek ({round(duration, 1)} detik)."
+
+    brightness_list = []
+    movement_list = []
+    prev_frame = None
+
+    # Untuk efisiensi, kita tidak mengecek semua frame, tapi melompat (sampling)
+    # Cukup ambil 10 frame secara merata dari sepanjang video untuk mendeteksi kondisi umum
+    step = max(int(frame_count / 10), 1)
+
+    for i in range(0, int(frame_count), step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Ubah frame ke hitam putih untuk analisis piksel
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        brightness_list.append(np.mean(gray))
+
+        if prev_frame is not None:
+            # Hitung perbedaan piksel dengan frame sebelumnya (Optical Flow sederhana)
+            diff = cv2.absdiff(gray, prev_frame)
+            movement_list.append(np.mean(diff))
+
+        prev_frame = gray
+
+    cap.release()
+
+    # 2. DARKNESS FILTER: Deteksi video saku/gelap gulita
+    # Skala 0 (Hitam pekat) sampai 255 (Putih terang)
+    avg_brightness = np.mean(brightness_list) if brightness_list else 0
+    if avg_brightness < 15: 
+        return False, f"Video terlalu gelap (Skor Brightness: {round(avg_brightness, 1)})."
+
+    # 3. SHAKINESS FILTER: Deteksi getaran ekstrem / lari
+    avg_movement = np.mean(movement_list) if movement_list else 0
+    if avg_movement > 90: # Ambang batas pergerakan acak piksel
+        return False, f"Guncangan/blur ekstrem terdeteksi (Skor Movement: {round(avg_movement, 1)})."
+
+    return True, "Lolos sensor."
+
 def analisa_video(file_path, prompt):
     video_file = genai.upload_file(path=file_path)
     while video_file.state.name == "PROCESSING":
@@ -64,7 +125,6 @@ def analisa_video(file_path, prompt):
         }
     )
     
-    # 🔥 FIX UNIVERSAL: Instruksi digeneralisasikan total untuk semua jenis video tanpa bias olahraga
     instruksi = f"""
     Target Analisis: {prompt}
     
@@ -86,11 +146,8 @@ def analisa_video(file_path, prompt):
         raw_json = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(raw_json)
     except Exception as e:
-        # Hapus file dari server Google meskipun terjadi error agar memori aman
         try: genai.delete_file(video_file.name) 
         except: pass
-        
-        # 🔥 TANGKAP BLOKIR SENSOR GEMINI & KIRIM KE LARAVEL
         raise Exception(f"Gemini menolak merespon. Kemungkinan diblokir oleh Safety Filter. Detail: {str(e)}")
 
 try:
@@ -99,8 +156,22 @@ try:
     items = results.get('files', [])
 
     semua_hasil = []
+    # Statistik untuk UI
+    stats = {"total": len(items), "filtered": 0, "analyzed": 0}
+
     for item in items:
         path = download_temp(item['id'], item['name'])
+        
+        # 🔥 GERBANG TOL SMART FILTER BERAKSI
+        is_valid, reason = smart_filter_pass(path)
+        
+        if not is_valid:
+            stats["filtered"] += 1
+            if os.path.exists(path): os.remove(path)
+            continue # BUANG VIDEO! Jangan serahkan ke Gemini!
+            
+        # Jika lolos sensor, baru berikan ke AI
+        stats["analyzed"] += 1
         hasil = analisa_video(path, user_prompt)
         
         if "data" in hasil:
@@ -117,8 +188,7 @@ try:
         if os.path.exists(path): os.remove(path)
         time.sleep(3)
 
-    # 🔥 WAJIB flush=True agar output tidak tertahan di buffer Windows
-    print(json.dumps({"status": "success", "results": semua_hasil}), flush=True)
+    # Kirim juga data statistik filter ke Laravel
+    print(json.dumps({"status": "success", "results": semua_hasil, "stats": stats}), flush=True)
 except Exception as e:
-    # 🔥 WAJIB flush=True untuk Error
     print(json.dumps({"error": str(e)}), flush=True)

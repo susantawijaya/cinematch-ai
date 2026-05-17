@@ -163,7 +163,9 @@ Route::post('/google-drive/index', function (Request $request) {
             ]);
         }
 
+        // 🔥 FASE 2: SMART FILTER RESPONSE HANDLER
         $newResults = $resultData['results'] ?? [];
+        $filterStats = $resultData['stats'] ?? ['filtered' => 0, 'analyzed' => 0];
         
         if (!empty($newResults)) {
             $existing = VideoMetadata::where('folder_id', $folderId)->first();
@@ -181,9 +183,21 @@ Route::post('/google-drive/index', function (Request $request) {
                     'description'       => $momen['description'],
                 ]);
             }
-            $aiReply = "Saya telah selesai memindai rekaman dan berhasil mengekstrak " . count($newResults) . " momen penting. Hasilnya kini sudah saya amankan ke dalam sub-folder baru: **\"{$subFolderName}\"**.";
+            
+            // Pesan AI yang lebih cerdas dan informatif
+            if ($filterStats['filtered'] > 0) {
+                $aiReply = "Analisis selesai. The Smart Filter telah membuang {$filterStats['filtered']} video dokumentasi buruk (gelap/bergetar ekstrim/pendek) secara otomatis demi menghemat token.\n\nDari sisa {$filterStats['analyzed']} video berkualitas tinggi yang dianalisis, saya berhasil mengekstrak " . count($newResults) . " momen penting ke dalam sub-folder: **\"{$subFolderName}\"**.";
+            } else {
+                $aiReply = "Saya telah selesai memindai {$filterStats['analyzed']} rekaman berkualitas baik dan berhasil mengekstrak " . count($newResults) . " momen penting. Hasilnya kini sudah saya amankan ke dalam sub-folder baru: **\"{$subFolderName}\"**.";
+            }
+            
         } else {
-            $aiReply = "Maaf, Santa. Setelah memindai seluruh footage di workspace ini dengan sangat teliti, saya tidak menemukan visual yang cocok dengan instruksi: \"{$userPrompt}\". Momen tersebut saat ini tidak tersedia di dalam rekaman berkas video.";
+            // Pesan jika tidak ada hasil
+            if ($filterStats['filtered'] > 0) {
+                $aiReply = "Maaf, Santa. Analisis selesai namun tidak ada kecocokan visual. The Smart Filter membuang {$filterStats['filtered']} video buruk, dan menganalisis sisa {$filterStats['analyzed']} video, namun tidak menemukan momen \"{$userPrompt}\" sama sekali.";
+            } else {
+                $aiReply = "Maaf, Santa. Setelah memindai seluruh {$filterStats['analyzed']} footage di workspace ini dengan sangat teliti, saya tidak menemukan visual yang cocok dengan instruksi: \"{$userPrompt}\". Momen tersebut saat ini tidak tersedia di dalam rekaman berkas video.";
+            }
         }
 
         ChatMessage::create(['folder_id' => $folderId, 'sender' => 'ai', 'message' => $aiReply]);
