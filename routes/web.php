@@ -86,8 +86,7 @@ Route::get('/search', function (Request $request) {
     ]);
 });
 
-// --- 🔥 FITUR BARU: ROUTE POLLING UNTUK REACT ---
-// React akan memanggil rute ini diam-diam setiap 3 detik untuk mengecek apakah Job AI sudah selesai
+// --- ROUTE POLLING UNTUK REACT ---
 Route::get('/workspace/status/{folderId}', function ($folderId) {
     return response()->json([
         'chat_messages' => ChatMessage::where('folder_id', $folderId)->get()->toArray(),
@@ -105,22 +104,54 @@ Route::post('/google-drive/index', function (Request $request) {
         return response()->json(['status' => 'error', 'message' => 'Token Google tidak ditemukan.'], 401);
     }
 
-    // 1. Catat pesan user ke database
     ChatMessage::create(['folder_id' => $folderId, 'sender' => 'user', 'message' => $userPrompt]);
 
-    // 2. Siapkan nama sub-folder
     $fillers = ['carikan', 'saya', 'momen', 'video', 'yang', 'sedang', 'di', 'ke', 'tolong', 'ada', 'seorang', 'pemain'];
     $cleanWords = str_replace($fillers, '', strtolower($userPrompt));
     $subFolderName = ucwords(trim(preg_replace('/\s+/', ' ', $cleanWords)));
     if (empty($subFolderName)) { $subFolderName = 'Ekstraksi Momen ' . date('H:i'); }
 
-    // 3. 🔥 EKSEKUSI AJAIB: Lempar beban berat ini ke Pekerja Latar Belakang (Queue)
     AnalyzeVideoPrompt::dispatch($folderId, $userPrompt, $accessToken, $subFolderName);
 
-    // 4. Langsung balas ke React dalam 0.1 detik tanpa membuat browser macet!
     return response()->json([
         'status' => 'processing',
         'message' => 'Pekerjaan telah masuk antrean. Sistem sedang memproses di latar belakang...',
         'chat_messages' => ChatMessage::where('folder_id', $folderId)->get()->toArray(),
     ]);
+});
+
+// --- 🔥 FASE 5: FFmpeg MERGER DENGAN MANUAL/AUTO SORTING ---
+Route::post('/google-drive/merge-clips', function (Request $request) {
+    set_time_limit(0); 
+
+    $duration = $request->input('duration', 3);
+    $clipsJsonStr = $request->input('clips_data'); // Ambil list klip langsung dari React
+    $accessToken = session('google_token');
+
+    $clips = json_decode($clipsJsonStr, true);
+
+    if (empty($clips)) {
+        return response()->json(['status' => 'error', 'message' => 'Tidak ada klip yang dipilih untuk digabung.']);
+    }
+
+    $scriptPath = base_path('scripts/video_merger.py');
+    $env = getenv();
+    $env['SystemRoot'] = 'C:\WINDOWS';
+    $env['PYTHONIOENCODING'] = 'utf-8';
+
+    // Eksekusi mesin Python FFmpeg
+    $process = new \Symfony\Component\Process\Process(['python', $scriptPath, $accessToken, $duration, $clipsJsonStr], null, $env);
+    $process->setTimeout(3600); 
+    $process->run();
+
+    $output = trim($process->getOutput());
+    $err = trim($process->getErrorOutput());
+
+    $jsonStart = strpos($output, '{');
+    if ($jsonStart !== false) {
+        $json = substr($output, $jsonStart);
+        return response($json)->header('Content-Type', 'application/json');
+    }
+
+    return response()->json(['status' => 'error', 'message' => 'Gagal merender. Error: ' . ($err ?: $output)]);
 });
