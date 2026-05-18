@@ -16,17 +16,14 @@ class AnalyzeVideoPrompt implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $timeout = 3600; // Batas waktu kerja 1 Jam agar tidak di-kill server
-    public $tries = 1;      // Jangan diulang otomatis jika error (biarkan user mengirim ulang)
+    public $timeout = 3600; 
+    public $tries = 1;      
 
     protected $folderId;
     protected $userPrompt;
     protected $accessToken;
     protected $subFolderName;
 
-    /**
-     * Create a new job instance.
-     */
     public function __construct($folderId, $userPrompt, $accessToken, $subFolderName)
     {
         $this->folderId = $folderId;
@@ -35,9 +32,6 @@ class AnalyzeVideoPrompt implements ShouldQueue
         $this->subFolderName = $subFolderName;
     }
 
-    /**
-     * Execute the job.
-     */
     public function handle(): void
     {
         $scriptPath = base_path('scripts/cloud_indexer.py');
@@ -90,7 +84,6 @@ class AnalyzeVideoPrompt implements ShouldQueue
                 return;
             }
 
-            // SMART FILTER RESPONSE HANDLER
             $newResults = $resultData['results'] ?? [];
             $filterStats = $resultData['stats'] ?? ['filtered' => 0, 'analyzed' => 0];
             
@@ -108,13 +101,15 @@ class AnalyzeVideoPrompt implements ShouldQueue
                         'timestamp'         => $momen['timestamp'],
                         'timestamp_seconds' => $momen['timestamp_seconds'] ?? 0,
                         'description'       => $momen['description'],
+                        'vibe_score'        => $momen['vibe_score'] ?? null,
+                        'semantic_tags'     => $momen['semantic_tags'] ?? [],
                     ]);
                 }
                 
                 if ($filterStats['filtered'] > 0) {
-                    $aiReply = "Analisis selesai. The Smart Filter telah membuang {$filterStats['filtered']} video buruk. Dari sisa {$filterStats['analyzed']} video yang dianalisis, saya berhasil mengekstrak " . count($newResults) . " momen penting ke sub-folder: **\"{$this->subFolderName}\"**.";
+                    $aiReply = "Analisis selesai. The Smart Filter telah membuang {$filterStats['filtered']} video buruk. Dari sisa {$filterStats['analyzed']} video yang dianalisis, saya berhasil mengekstrak " . count($newResults) . " momen penting dengan Vibe Score ke sub-folder: **\"{$this->subFolderName}\"**.";
                 } else {
-                    $aiReply = "Saya telah selesai memindai {$filterStats['analyzed']} rekaman berkualitas baik dan berhasil mengekstrak " . count($newResults) . " momen penting ke sub-folder: **\"{$this->subFolderName}\"**.";
+                    $aiReply = "Saya telah selesai memindai {$filterStats['analyzed']} rekaman dan berhasil mengekstrak " . count($newResults) . " momen penting (dilengkapi Semantic Tags) ke sub-folder: **\"{$this->subFolderName}\"**.";
                 }
             } else {
                 if ($filterStats['filtered'] > 0) {

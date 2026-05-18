@@ -10,10 +10,9 @@ from googleapiclient.http import MediaIoBaseDownload
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# 🔥 KUNCI ANTI-TERDIAM: Paksa Windows menggunakan UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
 
-# Path library milik LENOVO (Sesuaikan dengan PC kamu)
+# Path library milik LENOVO
 sys.path.append(r"C:\Users\LENOVO\AppData\Roaming\Python\Python314\site-packages")
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../.env'))
@@ -120,18 +119,20 @@ def analisa_video(file_path, prompt):
         }
     )
     
-    # 🔥 INSTRUKSI AI DIPERKETAT AGAR TIDAK MEMECAH KLIP (OVER-REPORTING)
+    # 🔥 FASE 4: VIBE SCORE & SEMANTIC TAGS INJECTION
     instruksi = f"""
     Target Analisis: {prompt}
     
     ATURAN KETAT AKURASI MUTLAK:
     1. Bertindaklah sebagai Video Editor Profesional yang sangat skeptis, objektif, dan jujur. JANGAN PERNAH BERASUMSI ATAU MENEBAK!
     2. Kamu HANYA boleh mendeteksi momen yang BENAR-BENAR terjadi secara visual 100% sesuai dengan Target Analisis.
-    3. JANGAN LAKUKAN OVER-REPORTING! Jika aksi terjadi terus-menerus dalam rentang beberapa detik (misalnya dari 0:05 sampai 0:10), KAMU HANYA BOLEH MENCATAT 1 KALI SAJA yaitu di titik AWAL dimulainya aksi (contoh: 0:05).
-    4. Dilarang keras memecah 1 adegan/momen yang berlanjutan menjadi beberapa timestamp yang berdekatan.
+    3. JANGAN LAKUKAN OVER-REPORTING! Jika aksi terjadi terus-menerus, MENCATAT 1 KALI SAJA di titik AWAL dimulainya aksi.
+    4. Dilarang keras memecah 1 adegan/momen yang berlanjutan menjadi beberapa timestamp.
+    5. VIBE SCORE (1-100): Berikan skor intensitas adegan. 100 = sangat epik/emosional/aksi tinggi, 1 = membosankan/diam.
+    6. SEMANTIC TAGS: Berikan 1-3 hashtag yang paling merepresentasikan makna tersembunyi atau emosi (contoh: ["#tegang", "#kemenangan"]).
     
     Format Output wajib berupa JSON murni tanpa markdown:
-    {{"data": [{{"timestamp": "menit:detik", "description": "deskripsi singkat objektif dari awal momen ini"}}]}}
+    {{"data": [{{"timestamp": "menit:detik", "description": "deskripsi singkat objektif dari awal momen ini", "vibe_score": 85, "semantic_tags": ["#tag1", "#tag2"]}}]}}
     """
     
     try:
@@ -167,21 +168,16 @@ try:
         hasil = analisa_video(path, user_prompt)
         
         if "data" in hasil:
-            # Sortir data berdasarkan timestamp dari terkecil ke terbesar
             sorted_data = sorted(hasil["data"], key=lambda x: parse_time_to_seconds(x.get("timestamp", "0:00")))
-            
-            last_sec = -999 # Variabel memori untuk deduplikasi
+            last_sec = -999 
             
             for match in sorted_data:
                 current_sec = parse_time_to_seconds(match.get("timestamp", "0:00"))
                 
-                # 🔥 FILTER PENGGABUNGAN (DEDUPLIKASI)
-                # Jika momen yang ditemukan jaraknya kurang dari 10 detik dari momen sebelumnya di video yang sama,
-                # anggap itu adalah satu kesatuan adegan yang berlanjut. HIRAUKAN KLIP INI!
                 if abs(current_sec - last_sec) < 10:
                     continue
                 
-                last_sec = current_sec # Catat memori waktu terbaru
+                last_sec = current_sec 
 
                 semua_hasil.append({
                     "folder_id": folder_id,
@@ -189,7 +185,9 @@ try:
                     "video": item['name'],
                     "timestamp": match.get("timestamp", "0:00"),
                     "timestamp_seconds": current_sec,
-                    "description": match.get("description", "")
+                    "description": match.get("description", ""),
+                    "vibe_score": match.get("vibe_score", 50),
+                    "semantic_tags": match.get("semantic_tags", [])
                 })
                 
         if os.path.exists(path): os.remove(path)
